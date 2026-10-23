@@ -7,6 +7,11 @@ env:
   SUB_VERSION: '118'
   KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
   CCACHE_KEY: ccache-ecsv4-6.6.118
+  # BakaSU 版本固定：上游 main 分支自 48fa4bb7(2026-10-10, "kernel: suspend susfs build")
+  # 起在 kernel/tools/susfs_compat.mk 末尾无条件 $(error)，只要 CONFIG_KSU_SUSFS=y 就必然
+  # 编译失败（"Please wait susfs update."）。v4.2.0-rc3 是最后一个未加该拦截的版本，
+  # 且其 SUSFS 内联钩子检查与本仓库使用的 susfs4oki(oki-android15-6.6) 补丁完全对应。
+  BAKASU_REF: 'v4.2.0-rc3'
 
 on:
   workflow_dispatch:
@@ -251,12 +256,14 @@ jobs:
           # 进入内核工作目录
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
-            echo "正在配置BakaSU（由于SukiSU长期未维护无法正常编译，且BakaSU兼容sukisu管理器，故SukiSU源码仓库已重定向为bakasu）..."
-            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            echo "正在配置BakaSU（固定到 ${{ env.BAKASU_REF }}；main 分支自 48fa4bb7 起阻断 susfs 编译）..."
+            curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/tags/${{ env.BAKASU_REF }}/kernel/setup.sh" | bash -s "${{ env.BAKASU_REF }}"
+            # setup.sh 全量克隆仓库后按参数 checkout 指定 tag；不要在此追加 --depth 拉取，
+            # 否则仓库变浅，后续 git rev-list --count HEAD 得到的版本号会失真
             echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@cctv18"' >> ./common/arch/arm64/configs/gki_defconfig
             cd ./KernelSU
             # 生成自定义版本号（基于提交计数）, 失败时使用 114514
-            KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 114514)
+            KSU_VERSION=$(expr $(git rev-list --count HEAD) + 30700 2>/dev/null || echo 114514)
             # 存储版本号到 GitHub 环境变量
             echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
             echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
@@ -299,8 +306,37 @@ jobs:
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
             cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             cd ./common
-            patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
-            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+            # SUSFS 主补丁：fs/proc/task_mmu.c 的 hunk#6 因本源码树已自行补上花括号而拒绝，
+            # 但 hunk#7 应用的是同一段逻辑的完整版本（含 SUS_MAP 判断与 last_vma_end 更新），
+            # 属已知无害失败。其余任何 .rej 都必须中止构建。
+            set +e
+            patch -p1 -F 3 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch
+            SUSFS_RC=$?
+            set -e
+            REJ_FILES=$(find . -name "*.rej")
+            if [ "$SUSFS_RC" -ne 0 ] || [ -n "$REJ_FILES" ]; then
+              echo "SUSFS 主补丁未干净应用，reject 文件："
+              echo "${REJ_FILES:-<无 .rej，但 patch 返回 $SUSFS_RC>}"
+              UNEXPECTED=$(echo "$REJ_FILES" | grep -v '^$' | grep -v '^\./fs/proc/task_mmu\.c\.rej$')
+              if [ -n "$UNEXPECTED" ]; then
+                echo "::error::SUSFS 补丁存在非预期失败：$UNEXPECTED"
+                find . -name "*.rej" -exec sh -c 'echo "=== $1 ==="; cat "$1"' _ {} \;
+                exit 1
+              fi
+              # 断言被拒绝的 hunk#6 确实被 hunk#7 覆盖
+              grep -q 'SUSFS_IS_INODE_SUS_MAP' fs/proc/task_mmu.c || {
+                echo "::error::task_mmu.c 缺少 SUS_MAP 逻辑，hunk#6 的丢失无法被覆盖"
+                exit 1
+              }
+              echo "已确认 task_mmu.c hunk#6 为已知无害失败（hunk#7 覆盖同等逻辑）"
+              rm -f fs/proc/task_mmu.c.rej
+            fi
+            patch -p1 -N -F 3 < 69_hide_stuff.patch
+            if find . -name "*.rej" | grep -q .; then
+              echo "::error::69_hide_stuff.patch 存在未应用 hunk"
+              find . -name "*.rej" -exec sh -c 'echo "=== $1 ==="; cat "$1"' _ {} \;
+              exit 1
+            fi
             cd ..
           else
             echo "已选择无内置KernelSU模式，跳过susfs配置..."
@@ -322,8 +358,19 @@ jobs:
           cp ./$GITHUB_ACTOR/zram_patch/lz4armv8.S ./common/lib
           cp ./$GITHUB_ACTOR/zram_patch/002-zstd.patch ./common/
           cd ./common
-          git apply -p1 < 001-lz4.patch || true
-          patch -p1 -F 3 < 002-zstd.patch || true
+          # 原脚本用 `git apply ... || true`：git apply 是全有或全无，任一文件失败即整包回滚，
+          # 加上 `|| true` 后补丁 100% 静默失效（历史构建中 lz4 实际从未生效）。
+          # 现改为失败即中止，并显式校验产物特征。
+          git apply -p1 --verbose < 001-lz4.patch
+          patch -p1 -F 3 < 002-zstd.patch
+          # 产物校验：新 lz4 树结构 + 版本标记
+          test -f lib/lz4/lz4.c && test -f lib/lz4/lz4hc.c || { echo "::error::lz4 补丁未生效（缺少新版本源文件）"; exit 1; }
+          test ! -f lib/lz4/lz4_compress.c || { echo "::error::lz4 旧版源文件未移除"; exit 1; }
+          grep -q 'lz4accel\.o' lib/lz4/Makefile || { echo "::error::lz4 armv8 加速未接入 Makefile"; exit 1; }
+          test -f lib/lz4/lz4armv8/lz4armv8.S || { echo "::error::lz4 armv8 汇编未就位"; exit 1; }
+          grep -q 'LZ4_VERSION_MAJOR' lib/lz4/lz4.h || { echo "::error::lz4 头文件未更新"; exit 1; }
+          grep -q 'ZSTD_VERSION_RELEASE  7' include/linux/zstd_lib.h || { echo "::error::zstd 补丁未生效（版本仍非 1.5.7）"; exit 1; }
+          echo "lz4/zstd 补丁已应用并通过产物校验"
 
       - name: 应用 lz4kd 补丁
         if: inputs.lz4kd_enable

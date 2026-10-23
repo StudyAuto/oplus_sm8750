@@ -10455,9 +10455,9 @@ Index: lib/lz4/lz4hc_compress.c
 ===================================================================
 diff --git a/lib/lz4/lz4hc_compress.c b/lib/lz4/lz4hc_compress.c
 deleted file mode 100644
---- a/lib/lz4/lz4hc_compress.c	(revision 802d968fb2c726f0a9dd88fed80a003d724769d4)
-+++ /dev/null	(revision 802d968fb2c726f0a9dd88fed80a003d724769d4)
-@@ -1,768 +0,0 @@
+--- a/lib/lz4/lz4hc_compress.c
++++ /dev/null
+@@ -1,769 +0,0 @@
 -/*
 - * LZ4 HC - High Compression Mode of LZ4
 - * Copyright (C) 2011-2015, Yann Collet.
@@ -11081,6 +11081,7 @@ deleted file mode 100644
 -	LZ4_streamHCPtr->internal_donotuse.base = NULL;
 -	LZ4_streamHCPtr->internal_donotuse.compressionLevel = (unsigned int)compressionLevel;
 -}
+-EXPORT_SYMBOL(LZ4_resetStreamHC);
 -
 -int LZ4_loadDictHC(LZ4_streamHC_t *LZ4_streamHCPtr,
 -	const char *dictionary,
