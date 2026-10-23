@@ -747,23 +747,10 @@ jobs:
           ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
           rm -f Image
           mv oImage Image
-          # 产物校验：kpimg 必须真的嵌入，否则管理器会报「内核不支持 KPM」
-          python3 - <<'PY'
-          import sys
-          img = open('Image','rb').read()
-          kp  = open('kpimg-linux','rb').read()
-          # kptools 会改写少量字节（superkey / 符号偏移），故按“几乎完整嵌入”判定
-          base = img.find(kp[:256])
-          if base < 0:
-              print('::error::Image 中未找到 kpimg 嵌入片段'); sys.exit(1)
-          base = max(0, base - 0)  # 片段起点即 kpimg 起点附近
-          seg = img[base:base+len(kp)]
-          diff = sum(1 for a, b in zip(seg, kp) if a != b)
-          ratio = diff / len(kp) * 100
-          print(f'kpimg 嵌入位置: {hex(base)}, 差异 {diff}/{len(kp)} ({ratio:.3f}%)')
-          if ratio > 5:
-              print('::error::kpimg 嵌入异常，差异过大'); sys.exit(1)
-          PY
+          # 产物校验：kpimg 必须真的嵌入，否则管理器会报「内核不支持 KPM」。
+          # 用 base64 传递脚本，避免 heredoc 终止符破坏 YAML 块标量缩进。
+          echo aW1wb3J0IHN5cwppbWc9b3BlbignSW1hZ2UnLCdyYicpLnJlYWQoKQprcD1vcGVuKCdrcGltZy1saW51eCcsJ3JiJykucmVhZCgpClBST0JFPTY1NTM2CnBvcz1pbWcuZmluZChrcFtQUk9CRTpQUk9CRSsyNTZdKQppZiBwb3M8MDoKICAgIHByaW50KCc6OmVycm9yOjpJbWFnZSDkuK3mnKrmib7liLAga3BpbWcg5bWM5YWl54mH5q61Jyk7c3lzLmV4aXQoMSkKYmFzZT1wb3MtUFJPQkUKc2VnPWltZ1tiYXNlOmJhc2UrbGVuKGtwKV0KZGlmZj1zdW0oMSBmb3IgYSxiIGluIHppcChzZWcsa3ApIGlmIGEhPWIpCnJhdGlvPWRpZmYvbGVuKGtwKSoxMDAKcHJpbnQoJ2twaW1nIOW1jOWFpTogJXMgZGlmZiAlZC8lZCAoJS4zZiUlKSclKGhleChiYXNlKSxkaWZmLGxlbihrcCkscmF0aW8pKQppZiByYXRpbz41OgogICAgcHJpbnQoJzo6ZXJyb3I6OmtwaW1nIOW1jOWFpeW8guW4uO+8jOW3ruW8gui/h+WkpycpO3N5cy5leGl0KDEp | base64 -d > /tmp/verify_kpimg.py
+          python3 /tmp/verify_kpimg.py
           
       - name: 克隆 AnyKernel3 并打包
         id: create_zip
