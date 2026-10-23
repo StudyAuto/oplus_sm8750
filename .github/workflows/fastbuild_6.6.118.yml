@@ -5,8 +5,25 @@ env:
   ANDROID_VERSION: 'android15'
   KERNEL_VERSION: '6.6'
   SUB_VERSION: '118'
-  KERNEL_NAME: 'android15-8-g29d86c5fc9dd-abogki428889875-4k'
+  # KERNEL_NAME 决定 uname -r 的 release 尾部。使用设备原厂实测值，
+  # 使 uname -r 与 /proc/version 的 release 段逐字节一致。
+  KERNEL_NAME: 'android15-8-g93e223c276e7-abogki500782043-4k'
   CCACHE_KEY: ccache-ecsv4-6.6.118
+  # ===== 内核版本串伪装（与设备原厂 /proc/version 逐字节一致）=====
+  # 原厂实测值（从官方 boot.img 反解，非读手机属性）：
+  #   Linux version 6.6.118-android15-8-g93e223c276e7-abogki500782043-4k
+  #     (kleaf@build-host) (Android (11368308, ...) clang version 18.0.0, LLD 18.0.0)
+  #     #1 SMP PREEMPT Wed Apr  8 15:08:30 UTC 2026
+  # 机制：
+  #   KBUILD_BUILD_USER / HOST      -> scripts/mkcompile_h 的 LINUX_COMPILE_BY/HOST
+  #   KBUILD_BUILD_TIMESTAMP        -> init/Makefile 原样拼入 UTS_VERSION（不做日期解析，
+  #                                    必须写成 date(1) 默认格式；个位日期用空格左填充）
+  #   CONFIG_LOCALVERSION           -> release 尾部（由"添加制作名称"步骤改写）
+  # 注意：编译器段（Android (11368308,...) clang version 18.0.0）无法通过变量伪装，
+  # 但本构建用的 clang-r510928 与设备原厂为同一版本，故天然一致。
+  SPOOF_BUILD_USER: 'kleaf'
+  SPOOF_BUILD_HOST: 'build-host'
+  SPOOF_BUILD_TIMESTAMP: 'Wed Apr  8 15:08:30 UTC 2026'
   # BakaSU 版本固定：上游 main 分支自 48fa4bb7(2026-10-10, "kernel: suspend susfs build")
   # 起在 kernel/tools/susfs_compat.mk 末尾无条件 $(error)，只要 CONFIG_KSU_SUSFS=y 就必然
   # 编译失败（"Please wait susfs update."）。v4.2.0-rc3 是最后一个未加该拦截的版本，
@@ -628,7 +645,7 @@ jobs:
             for f in ./common/scripts/setlocalversion; do
               sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
             done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+            sudo sed -i 's/-4k/-${{ github.event.inputs.kernel_suffix }}/g' ./common/arch/arm64/configs/gki_defconfig
           else
             echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
             for f in ./common/scripts/setlocalversion; do
@@ -638,6 +655,23 @@ jobs:
           fi
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+          # 校验 release 后缀确实写进了 defconfig（避免 sed 未命中导致版本串不符）
+          grep -q "\-${KERNEL_NAME_OR_SUFFIX:-${{ env.KERNEL_NAME }}}" ./common/arch/arm64/configs/gki_defconfig \
+            || echo "::warning::未在 gki_defconfig 中找到预期版本后缀，请检查替换逻辑"
+
+      - name: 注入版本串伪装变量
+        run: |
+          # 这三个变量由 Kbuild 原样拼入 UTS_VERSION 与 LINUX_COMPILE_BY/HOST，
+          # 从而让 uname(2) 与 /proc/version 都显示原厂编译者与时间。
+          # KBUILD_BUILD_TIMESTAMP 不做日期解析，必须是 date(1) 默认格式。
+          echo "KBUILD_BUILD_USER=${{ env.SPOOF_BUILD_USER }}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=${{ env.SPOOF_BUILD_HOST }}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_TIMESTAMP=${{ env.SPOOF_BUILD_TIMESTAMP }}" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_VERSION=1" >> $GITHUB_ENV
+          echo "已设置版本串伪装："
+          echo "  KBUILD_BUILD_USER      = ${{ env.SPOOF_BUILD_USER }}"
+          echo "  KBUILD_BUILD_HOST      = ${{ env.SPOOF_BUILD_HOST }}"
+          echo "  KBUILD_BUILD_TIMESTAMP = ${{ env.SPOOF_BUILD_TIMESTAMP }}"
            
       - name: 构建内核
         run: |
