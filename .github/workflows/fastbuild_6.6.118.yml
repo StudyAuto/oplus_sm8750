@@ -317,17 +317,19 @@ jobs:
             if [ "$SUSFS_RC" -ne 0 ] || [ -n "$REJ_FILES" ]; then
               echo "SUSFS 主补丁未干净应用，reject 文件："
               echo "${REJ_FILES:-<无 .rej，但 patch 返回 $SUSFS_RC>}"
-              UNEXPECTED=$(echo "$REJ_FILES" | grep -v '^$' | grep -v '^\./fs/proc/task_mmu\.c\.rej$')
+              # 注意：grep 无匹配时返回 1，在 set -e 下会直接中断脚本，
+              # 故用 `|| true` 兜住，让判定逻辑按预期走到下面的分支
+              UNEXPECTED=$(printf '%s\n' "$REJ_FILES" | grep -v '^$' | grep -v '^\./fs/proc/task_mmu\.c\.rej$' || true)
               if [ -n "$UNEXPECTED" ]; then
                 echo "::error::SUSFS 补丁存在非预期失败：$UNEXPECTED"
                 find . -name "*.rej" -exec sh -c 'echo "=== $1 ==="; cat "$1"' _ {} \;
                 exit 1
               fi
               # 断言被拒绝的 hunk#6 确实被 hunk#7 覆盖
-              grep -q 'SUSFS_IS_INODE_SUS_MAP' fs/proc/task_mmu.c || {
+              if ! grep -q 'SUSFS_IS_INODE_SUS_MAP' fs/proc/task_mmu.c; then
                 echo "::error::task_mmu.c 缺少 SUS_MAP 逻辑，hunk#6 的丢失无法被覆盖"
                 exit 1
-              }
+              fi
               echo "已确认 task_mmu.c hunk#6 为已知无害失败（hunk#7 覆盖同等逻辑）"
               rm -f fs/proc/task_mmu.c.rej
             fi
