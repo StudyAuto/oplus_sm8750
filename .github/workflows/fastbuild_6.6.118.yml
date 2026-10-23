@@ -255,7 +255,15 @@ jobs:
         run: |
           # 进入内核工作目录
           cd kernel_workspace
-          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" || ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "正在配置SukiSU Ultra (builtin 分支，原生 SUSFS + KPM 接口，配合 kpimg 提供真实 KPM 加载器)..."
+            curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/refs/heads/builtin/kernel/setup.sh" | bash -s builtin
+            cd ./KernelSU
+            # builtin 分支为普通分支（非 tag），用 HEAD 计数生成版本号
+            KSU_VERSION=$(expr $(git rev-list --count HEAD) + 30700 2>/dev/null || echo 114514)
+            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+            echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
+          elif [[ ${{ github.event.inputs.ksu_type }} == "bakasu" ]]; then
             echo "正在配置BakaSU（固定到 ${{ env.BAKASU_REF }}；main 分支自 48fa4bb7 起阻断 susfs 编译）..."
             curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/refs/tags/${{ env.BAKASU_REF }}/kernel/setup.sh" | bash -s "${{ env.BAKASU_REF }}"
             # setup.sh 全量克隆仓库后按参数 checkout 指定 tag；不要在此追加 --depth 拉取，
@@ -300,7 +308,14 @@ jobs:
           cd kernel_workspace
           if [[ ${{ github.event.inputs.ksu_type }} != "none" ]]; then
             echo "正在添加susfs补丁..."
-            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+              # SukiSU builtin 分支与上游 simonpunk 的 susfs4ksu 同步，
+              # 其 kernel/Kbuild 依赖 ksu_install_su_fd / ksu_selinux_hide_running 等
+              # 最新钩子，只有上游补丁与之匹配（susfs4oki 是给 BakaSU 用的旧快照）
+              git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            else
+              git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
+            fi
             wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/69_hide_stuff.patch -O ./common/69_hide_stuff.patch
             cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
             cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -394,20 +409,24 @@ jobs:
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # 以下 5 项只存在于 BakaSU 的 Kconfig，写入 SukiSU builtin 会被 Kconfig
+          # 静默忽略并产生 "unknown symbol" 警告，故按分支区分
+          if [[ ${{ github.event.inputs.ksu_type }} != "sukisu" ]]; then
+            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           
       - name: 添加 KSU & 其他配置项
         run: |
@@ -430,8 +449,22 @@ jobs:
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
           #禁用 defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
-          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          # SukiSU builtin 的 kernel/Makefile 只有在 usr/include/linux/unistd.h 存在时
+          # 才会把 preinit/*.o 编入（见 kernel/Makefile:25 的 wildcard 判断）；
+          # 该头文件由 CONFIG_HEADERS_INSTALL 控制。关掉会出现链接期
+          # undefined symbol: ksu_setup_preinit_file。
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" ]]; then
+            echo "CONFIG_HEADERS_INSTALL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
+            #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
+            echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          # SukiSU builtin 的 CONFIG_KPM 默认 n；其 sukisu_kpm_* 为可被 kpimg
+          # inline hook 的空桩，ksud 的 check_version() 要求返回非空字符串，
+          # 故必须开启该配置符号，再由下面的 KernelPatch 步骤注入真实实现。
+          if [[ ${{ github.event.inputs.ksu_type }} == "sukisu" && "${{ github.event.inputs.kpm_enable }}" == "true" ]]; then
+            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           # 应用 CVE_2026_43499 修复补丁
           cd common
           wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/cve-2026-43499-rtmutex-6.6.patch
@@ -700,7 +733,13 @@ jobs:
       - name: 应用KPM并修补内核
         if: inputs.kpm_enable
         run: |
-          echo "正在应用KP-N并修补内核..."
+          # kpimg 用 inline hook 把 SukiSU 的 sukisu_kpm_* 空桩替换为真实实现。
+          # 仅 sukisu 分支需要：其他分支没有这些桩符号，kpimg 找不到 hook 目标。
+          if [[ ${{ github.event.inputs.ksu_type }} != "sukisu" ]]; then
+            echo "当前分支不使用 kpimg 注入（${{ github.event.inputs.ksu_type }}），跳过"
+            exit 0
+          fi
+          echo "正在用 KernelPatch 注入 KPM 加载器..."
           cd kernel_workspace/common/out/arch/arm64/boot
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
           wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
@@ -708,6 +747,23 @@ jobs:
           ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
           rm -f Image
           mv oImage Image
+          # 产物校验：kpimg 必须真的嵌入，否则管理器会报「内核不支持 KPM」
+          python3 - <<'PY'
+          import sys
+          img = open('Image','rb').read()
+          kp  = open('kpimg-linux','rb').read()
+          # kptools 会改写少量字节（superkey / 符号偏移），故按“几乎完整嵌入”判定
+          base = img.find(kp[:256])
+          if base < 0:
+              print('::error::Image 中未找到 kpimg 嵌入片段'); sys.exit(1)
+          base = max(0, base - 0)  # 片段起点即 kpimg 起点附近
+          seg = img[base:base+len(kp)]
+          diff = sum(1 for a, b in zip(seg, kp) if a != b)
+          ratio = diff / len(kp) * 100
+          print(f'kpimg 嵌入位置: {hex(base)}, 差异 {diff}/{len(kp)} ({ratio:.3f}%)')
+          if ratio > 5:
+              print('::error::kpimg 嵌入异常，差异过大'); sys.exit(1)
+          PY
           
       - name: 克隆 AnyKernel3 并打包
         id: create_zip
@@ -736,7 +792,11 @@ jobs:
             wget https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip
           fi
           if [[ ${{ github.event.inputs.kpm_enable }} == 'true' ]]; then
-            wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
+            # sukisu 走 kpimg 内置注入，管理器（SukiSU Ultra）自带 KPM 管理页；
+            # 再装 KPatch-Next 外挂模块会与之冲突（两套 KPM 加载器）
+            if [[ ${{ github.event.inputs.ksu_type }} != "sukisu" ]]; then
+              wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
+            fi
           fi
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
             AK3_NAME=AnyKernel3_${KSU_TYPENAME}_${{ env.KSUVER }}_${{ env.KERNEL_VERSION }}_${{ github.event.inputs.kernel_suffix }}.zip
