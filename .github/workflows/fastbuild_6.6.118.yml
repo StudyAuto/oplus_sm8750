@@ -733,23 +733,26 @@ jobs:
       - name: 应用KPM并修补内核
         if: inputs.kpm_enable
         run: |
-          # kpimg 用 inline hook 把 SukiSU 的 sukisu_kpm_* 空桩替换为真实实现。
-          # 仅 sukisu 分支需要：其他分支没有这些桩符号，kpimg 找不到 hook 目标。
+          # SukiSU 的 sukisu_kpm_* 是空桩，必须由 kpimg 用 inline hook 换成真实实现。
+          # 必须用 SukiSU 官方 fork 的 kpimg：KPatch-Next 的 kpimg 里没有任何
+          # sukisu_kpm_* 目标（strings 实测 0 处），注入后管理器仍会报
+          # 「内核不支持 KPM」；SukiSU fork 的 kpimg 含全部 7 个桩的 hook。
+          # 仅 sukisu 分支需要，其他分支没有这些桩符号。
           if [[ ${{ github.event.inputs.ksu_type }} != "sukisu" ]]; then
             echo "当前分支不使用 kpimg 注入（${{ github.event.inputs.ksu_type }}），跳过"
             exit 0
           fi
-          echo "正在用 KernelPatch 注入 KPM 加载器..."
+          echo "正在用 SukiSU KernelPatch 注入 KPM 加载器..."
           cd kernel_workspace/common/out/arch/arm64/boot
-          wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
-          wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
+          KP_BASE=https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/latest/download
+          wget $KP_BASE/kptools-linux -O kptools-linux
+          wget $KP_BASE/kpimg -O kpimg
           chmod +x ./kptools-linux
-          ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
+          ./kptools-linux -p -i ./Image -k ./kpimg -o ./oImage
           rm -f Image
           mv oImage Image
-          # 产物校验：kpimg 必须真的嵌入，否则管理器会报「内核不支持 KPM」。
-          # 用 base64 传递脚本，避免 heredoc 终止符破坏 YAML 块标量缩进。
-          echo aW1wb3J0IHN5cwppbWc9b3BlbignSW1hZ2UnLCdyYicpLnJlYWQoKQprcD1vcGVuKCdrcGltZy1saW51eCcsJ3JiJykucmVhZCgpClBST0JFPTY1NTM2CnBvcz1pbWcuZmluZChrcFtQUk9CRTpQUk9CRSsyNTZdKQppZiBwb3M8MDoKICAgIHByaW50KCc6OmVycm9yOjpJbWFnZSDkuK3mnKrmib7liLAga3BpbWcg5bWM5YWl54mH5q61Jyk7c3lzLmV4aXQoMSkKYmFzZT1wb3MtUFJPQkUKc2VnPWltZ1tiYXNlOmJhc2UrbGVuKGtwKV0KZGlmZj1zdW0oMSBmb3IgYSxiIGluIHppcChzZWcsa3ApIGlmIGEhPWIpCnJhdGlvPWRpZmYvbGVuKGtwKSoxMDAKcHJpbnQoJ2twaW1nIOW1jOWFpTogJXMgZGlmZiAlZC8lZCAoJS4zZiUlKSclKGhleChiYXNlKSxkaWZmLGxlbihrcCkscmF0aW8pKQppZiByYXRpbz41OgogICAgcHJpbnQoJzo6ZXJyb3I6OmtwaW1nIOW1jOWFpeW8guW4uO+8jOW3ruW8gui/h+WkpycpO3N5cy5leGl0KDEp | base64 -d > /tmp/verify_kpimg.py
+          # 产物校验：kpimg 真被嵌入，且 kpimg 自身确实含 sukisu_kpm_* hook 目标
+          echo aW1wb3J0IHN5cwppbWcgPSBvcGVuKCdJbWFnZScsJ3JiJykucmVhZCgpCmtwID0gb3Blbigna3BpbWcnLCdyYicpLnJlYWQoKQojIOW/hemhu+WFiOehruiupOeUqOeahOaYryBTdWtpU1Ug5a6Y5pa5IGtwaW1n77yaS1BhdGNoLU5leHQg55qEIGtwaW1nIOS4jeWQq+i/meS6myBob29rIOebruaghwppZiBiJ3N1a2lzdV9rcG1fdmVyc2lvbicgbm90IGluIGtwOgogICAgcHJpbnQoJzo6ZXJyb3I6OmtwaW1nIOS4jeWQqyBzdWtpc3Vfa3BtXyogaG9vayDnm67moIfvvIzor7fnoa7orqQga3BpbWcg5p2l5rqQJykKICAgIHN5cy5leGl0KDEpCiMga3B0b29scyDkvJrmlLnlhpkga3BpbWcg5aS06YOo77yIc3VwZXJrZXkgLyBob29rIOihqO+8ie+8jOS4jeiDveeUqOaWh+S7tuW8gOWktOWBmueJueW+gQpQUk9CRSA9IDY1MDAwCnBvcyA9IGltZy5maW5kKGtwW1BST0JFOlBST0JFICsgMjU2XSkKaWYgcG9zIDwgMDoKICAgIHByaW50KCc6OmVycm9yOjpJbWFnZSDkuK3mnKrmib7liLAga3BpbWcg5bWM5YWl54mH5q61JykKICAgIHN5cy5leGl0KDEpCmJhc2UgPSBwb3MgLSBQUk9CRQpzZWcgPSBpbWdbYmFzZTpiYXNlICsgbGVuKGtwKV0KZGlmZiA9IHN1bSgxIGZvciBhLCBiIGluIHppcChzZWcsIGtwKSBpZiBhICE9IGIpCnJhdGlvID0gZGlmZiAvIGxlbihrcCkgKiAxMDAKcHJpbnQoJ2twaW1nIOW1jOWFpTogJXMgZGlmZiAlZC8lZCAoJS4zZiUlKScgJSAoaGV4KGJhc2UpLCBkaWZmLCBsZW4oa3ApLCByYXRpbykpCmlmIHJhdGlvID4gNToKICAgIHByaW50KCc6OmVycm9yOjprcGltZyDltYzlhaXlvILluLjvvIzlt67lvILov4flpKcnKQogICAgc3lzLmV4aXQoMSkK | base64 -d > /tmp/verify_kpimg.py
           python3 /tmp/verify_kpimg.py
           
       - name: 克隆 AnyKernel3 并打包
